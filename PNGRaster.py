@@ -27,8 +27,7 @@ class PngRaster:
             self.palette = None
             self.buf = []
             for i in range(height):
-                line = bytearray(b'\x00' * self.stride)
-                self.buf.append(line)
+                self.buf.append(bytearray(b'\x00' * self.stride))
 
     def index_color(self, index, value=None):
         byte_index_start = index * 3
@@ -56,7 +55,10 @@ class PngRaster:
         """
         scanline = self.buf[y]
         pixel_length_in_bits = self.samples_per_pixel * self.bit_depth
+        return self.scanline_sample(scanline, pixel_length_in_bits, x, sample)
 
+    @staticmethod
+    def scanline_sample(scanline, pixel_length_in_bits, x, sample=None):
         start_pos_in_bits = x * pixel_length_in_bits
         end_pos_in_bits = start_pos_in_bits + pixel_length_in_bits - 1
         start_pos_in_bytes = int(start_pos_in_bits / 8) + 1  # byte 0 is interlacing
@@ -138,6 +140,76 @@ class PngRaster:
             yield signature, data
             if signature == 'IEND':
                 break
+
+    @staticmethod
+    def as_samples(bit_depth, sample_count, scanline):
+        pixel_length_in_bits = bit_depth * sample_count
+        bit_depth_mask = (1 << bit_depth) - 1
+        mask_sample_bits = (1 << pixel_length_in_bits) - 1
+        for start_pos_in_bits in range(0, len(scanline) * 8, pixel_length_in_bits):
+            end_pos_in_bits = start_pos_in_bits + pixel_length_in_bits - 1
+            start_pos_in_bytes = int(start_pos_in_bits / 8) + 1
+            end_pos_in_bytes = int(end_pos_in_bits / 8) + 1
+
+            section = scanline[start_pos_in_bytes:end_pos_in_bytes + 1]
+            value = int.from_bytes(section, byteorder='big', signed=False)
+            unused_bits_right_of_sample = (8 - (end_pos_in_bits + 1) % 8) % 8
+            sample = (value >> unused_bits_right_of_sample) & mask_sample_bits
+            if sample_count == 1:
+                yield sample
+            else:
+                yield [
+                    (sample >> bit_move) & bit_depth_mask
+                    for bit_move in range((sample_count - 1) * bit_depth, -1, -bit_depth)
+                ]
+
+    @staticmethod
+    def png_scanlines(file):
+        if file.read(8) != b'\x89PNG\r\n\x1a\n':
+            return  # Not a png file.
+        decompress = zlib.decompressobj()
+        buf = b''
+        bit_depth = 0
+        stride = 1
+        sample_count = 1
+        while True:
+            length_bytes = file.read(4)
+            if len(length_bytes) == 0:
+                break
+            length = struct.unpack(">I", length_bytes)[0]
+            byte = file.read(4)
+            signature = byte.decode('utf8')
+            if len(signature) == 0:
+                break
+            if signature == 'IHDR':
+                data = file.read(length)
+                width = struct.unpack(">I", data[0:4])[0]
+                # height = struct.unpack(">I", data[4:8])[0]
+                bit_depth = data[8]
+                color_type = data[9]
+                sample_count = PngRaster.get_sample_count(color_type)
+                stride = PngRaster.get_stride(sample_count, bit_depth, width) + 1
+                file.seek(4, 1)  # skip crc
+                continue
+            if signature == 'IDAT':
+                while length > 0:
+                    read_amount = min(stride, length)
+                    buf += decompress.decompress(file.read(read_amount))
+                    length -= read_amount
+                    while len(buf) >= stride:
+                        yield [x for x in PngRaster.as_samples(bit_depth, sample_count, buf[:stride])]
+                        buf = buf[stride:]
+                file.seek(4, 1)  # skip crc
+                continue
+            if signature == 'IEND':
+                buf += decompress.flush()
+                while len(buf) >= stride:
+                    yield [x for x in PngRaster.as_samples(bit_depth, sample_count, buf[:stride])]
+                    buf = buf[stride:]
+                file.seek(4, 1)
+                return
+            data = file.read(length)
+            crc = file.read(4)
 
     def read_png_file(self, file):
         with open(file, "rb") as f:
@@ -231,8 +303,12 @@ class PngRaster:
 if __name__ == "__main__":
     raster = PngRaster(100, 100, 1, 3)
     raster.fill(0)
-    raster.draw_line(0, 0, 100, 100, 1)
-    raster.draw_line(0, 100, 100, 0, 1)
+    raster.draw_line(0, 0, 100, 100, 0xFFFFFFFF)
+    raster.draw_line(0, 100, 100, 0, 0)
     raster.index_color(0, 0x00FF00)
     raster.index_color(1, 0xFF0000)
     raster.save_png("default.png")
+
+    with open("default.png", "rb") as f:
+        for line in PngRaster.png_scanlines(f):
+            print(line)
