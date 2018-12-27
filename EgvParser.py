@@ -1,14 +1,32 @@
 # EGV Parser released under MIT License.
 
-from xml.etree.cElementTree import Element, ElementTree, SubElement
+import sys
+from math import ceil
+
+from PNGRaster import PngRaster
 
 
 class EgvParser:
-
     def __init__(self):
         self.command = None
         self.distance = 0
         self.number_value = 0
+
+    @staticmethod
+    def skip(file, byte, count):
+        pos = file.tell()
+        while count > 0:
+            char = file.read(1)
+            if char == byte:
+                count -= 1
+            if char is None or len(char) == 0:
+                file.seek(pos, 0)
+                # If we didn't skip the right stuff, reset the position.
+                break
+
+    def skip_header(self, file):
+        self.skip(file, b'\n', 3)
+        self.skip(file, b'%', 5)
 
     def parse(self, f):
         while True:
@@ -86,7 +104,6 @@ class EgvInterpreter:
 
     def send(self, commands):
         cmd = commands[0]
-        print(commands)
         if cmd is None:
             return
         elif cmd == b'T':  # move right
@@ -147,113 +164,50 @@ class EgvInterpreter:
             self.mode &= ~MODE_E
 
 
-def skip(file, byte, count):
-    while count > 0:
-        char = file.read(1)
-        if char == byte:
-            count -= 1
-
-
-def skip_header(file):
-    skip(file, b'\n', 3)
-    skip(file, b'%', 5)
-
-
 def get_bounds(values):
     min_x = float('inf')
     min_y = float('inf')
     max_x = -float('inf')
     max_y = -float('inf')
     for segments in values:
-        if segments[4] & MODE_E:
-            x0 = segments[0]
-            y0 = segments[1]
-            x1 = segments[2]
-            y1 = segments[3]
-            min_x = min(min_x, x0, x1)
-            min_y = min(min_y, y0, y1)
-            max_x = max(max_x, x0, x1)
-            max_y = max(max_y, y0, y1)
+        x0 = segments[0]
+        y0 = segments[1]
+        x1 = segments[2]
+        y1 = segments[3]
+        min_x = min(min_x, x0, x1)
+        min_y = min(min_y, y0, y1)
+        max_x = max(max_x, x0, x1)
+        max_y = max(max_y, y0, y1)
     return min_x, min_y, max_x, max_y
 
 
 def read(f):
+    filename = f
     interpreter = EgvInterpreter()
     parser = EgvParser()
-    with open(f, "rb") as file:
-        skip_header(file)
-        for command in parser.parse(file):
-            interpreter.send(command)
+    if isinstance(f, str):
+        with open(f, "rb") as f:
+            for c in parser.parse(f):
+                interpreter.send(c)
+    else:
+        for c in parser.parse(f):
+            interpreter.send(c)
+
     bounds = get_bounds(interpreter.draw_segments)
-    for pos in interpreter.draw_segments:
-        print(pos)
-    tree = create_svg_dom(interpreter.draw_segments, bounds)
-    tree.write(f + ".svg")
-
-
-NAME_SVG = "svg"
-ATTR_VERSION = "version"
-VALUE_SVG_VERSION = "1.1"
-ATTR_XMLNS = "xmlns"
-VALUE_XMLNS = "http://www.w3.org/2000/svg"
-ATTR_XMLNS_LINK = "xmlns:xlink"
-VALUE_XLINK = "http://www.w3.org/1999/xlink"
-ATTR_XMLNS_EV = "xmlns:ev"
-VALUE_XMLNS_EV = "http://www.w3.org/2001/xml-events"
-ATTR_WIDTH = "width"
-ATTR_HEIGHT = "height"
-ATTR_VIEWBOX = "viewBox"
-NAME_PATH = "path"
-ATTR_DATA = "d"
-ATTR_FILL = "fill"
-ATTR_STROKE = "stroke"
-ATTR_STROKE_WIDTH = "stroke-width"
-VALUE_NONE = "none"
-
-
-def create_svg_dom(values, bounds):
-    root = Element(NAME_SVG)
-    root.set(ATTR_VERSION, VALUE_SVG_VERSION)
-    root.set(ATTR_XMLNS, VALUE_XMLNS)
-    root.set(ATTR_XMLNS_LINK, VALUE_XLINK)
-    root.set(ATTR_XMLNS_EV, VALUE_XMLNS_EV)
     width = bounds[2] - bounds[0]
     height = bounds[3] - bounds[1]
-    root.set(ATTR_WIDTH, str(width))
-    root.set(ATTR_HEIGHT, str(height))
-    viewbox = \
-        str(bounds[0]) + " " + \
-        str(bounds[1]) + " " + \
-        str(width) + " " + \
-        str(height)
-    root.set(ATTR_VIEWBOX, viewbox)
 
-    for segments in values:
-        if segments[4] & MODE_E:
-            path = SubElement(root, NAME_PATH)
-            data = "M"
-            x0 = segments[0]
-            y0 = segments[1]
-            x1 = segments[2]
-            y1 = segments[3]
-            data += " " + str(x0) + "," + str(y0)
-            data += " " + str(x1) + "," + str(y1)
-            path.set(ATTR_DATA, data)
-            path.set(ATTR_FILL, VALUE_NONE)
-            path.set(ATTR_STROKE, "#000")
-            path.set(ATTR_STROKE_WIDTH, "1")
-    return ElementTree(root)
+    width = int(ceil(width / 8) * 8)
+    raster = PngRaster(width + 2, height + 2, 1, 0)
+    raster.fill(1)
+    for segments in interpreter.draw_segments:
+        if segments[4] & MODE_D:
+            raster.draw_line(segments[0] + 1 - bounds[0],
+                             segments[1] + 1 - bounds[1],
+                             segments[2] + 1 - bounds[0],
+                             segments[3] + 1 - bounds[1], 0)
+    raster.save_png(str(filename) + ".png")
 
 
-# argv = sys.argv
-# read(argv[1])
-read("outfile1.EGV")
-read("outfile2.EGV")
-read("outfile3.EGV")
-read("outfile4.EGV")
-read("outfile5.EGV")
-read("outfile6.EGV")
-read("outfile7.EGV")
-read("outfile8.EGV")
-read("outfile9.EGV")
-
+argv = sys.argv
+read(argv[1])
