@@ -3,8 +3,20 @@ import zlib
 from math import ceil
 
 
+# MIT LICENSE
+
 class PngRaster:
-    def __init__(self, width, height, bit_depth=2, color_type=0):
+    """
+    Png Raster is a image reading and writing library that loads and save files into and out of PNG.
+
+    The code permits PNG illegal formats, like bit_depth=1, color_type=2 (1 bit per triplet color) or bit_depth 27,
+    color_type=0 (27 bit grayscale), and will properly stack these across multiple bytes as needed. These are not
+    generally permitted by PNG and basically nothing will read them. You should stick to the permitted values.
+
+    http://www.libpng.org/pub/png/spec/1.2/PNG-Chunks.html
+    """
+
+    def __init__(self, width, height, bit_depth=8, color_type=2):
         self.color_type = color_type
         self.bit_depth = bit_depth
         self.samples_per_pixel = 1
@@ -16,6 +28,36 @@ class PngRaster:
         for i in range(height):
             line = bytearray(b'\x00' + b'\xFF' * self.stride)
             self.buf.append(line)
+
+    def pixel(self, x, y, sample=None):
+        """
+        Reads the current value of the sample, writes the given sample value (if it exists).
+
+        :param x: location of the sample within the scanline
+        :param y: index of the scanline
+        :param sample: sample value, this should be in the units of the png file.
+        :return: the value of the sample in that location.
+        """
+        scanline = self.buf[y]
+        pixel_length_in_bits = self.samples_per_pixel * self.bit_depth
+
+        start_pos_in_bits = x * pixel_length_in_bits
+        end_pos_in_bits = start_pos_in_bits + pixel_length_in_bits - 1
+        start_pos_in_bytes = int(start_pos_in_bits / 8) + 1  # byte 0 is interlacing
+        end_pos_in_bytes = int(end_pos_in_bits / 8) + 1  # byte 0 is interlacing
+
+        section = scanline[start_pos_in_bytes:end_pos_in_bytes + 1]
+        value = int.from_bytes(section, byteorder='big', signed=False)
+        unused_bits_right_of_sample = (8 - (end_pos_in_bits + 1) % 8) % 8
+        mask_sample_bits = (1 << pixel_length_in_bits) - 1
+        original = (value >> unused_bits_right_of_sample) & mask_sample_bits
+        if sample is not None:
+            value &= ~(mask_sample_bits << unused_bits_right_of_sample)
+            value |= (sample & mask_sample_bits) << unused_bits_right_of_sample
+            for pos in range(end_pos_in_bytes, start_pos_in_bytes - 1, -1):
+                scanline[pos] = value & 0xff
+                value >>= 8
+        return original
 
     @staticmethod
     def get_stride(sample_count, bit_depth, width):
@@ -102,6 +144,16 @@ class PngRaster:
         ]
 
     def draw_line(self, x0, y0, x1, y1, color=0):
+        """
+        Simple implementation of Bresenham's line draw algorithm to draw lines onto the raster.
+
+        :param x0: x value
+        :param y0: y value
+        :param x1: second x value
+        :param y1: second y value
+        :param color: the color we are writing.
+        :return:
+        """
         dy = y1 - y0  # BRESENHAM LINE DRAW ALGORITHM
         dx = x1 - x0
         if dy < 0:
@@ -140,50 +192,6 @@ class PngRaster:
                 fraction += dx
                 self.plot(x0, y0, color)
 
-    def get_pixel(self, x, y):
-        scanline = self.buf[y]
-        pixel_length_in_bits = self.samples_per_pixel * self.bit_depth
-
-        start_pos_in_bits = x * pixel_length_in_bits
-        end_pos_in_bits = start_pos_in_bits + pixel_length_in_bits - 1
-        start_pos_in_bytes = int(start_pos_in_bits / 8) + 1  # byte 0 is interlacing
-        end_pos_in_bytes = int(end_pos_in_bits / 8) + 1  # byte 0 is interlacing
-
-        section = scanline[start_pos_in_bytes:end_pos_in_bytes + 1]
-        value = int.from_bytes(section, byteorder='big', signed=False)
-        return value
-
-    def set_pixel(self, x, y, sample):
-        scanline = self.buf[y]
-        pixel_length_in_bits = self.samples_per_pixel * self.bit_depth
-
-        start_pos_in_bits = x * pixel_length_in_bits
-        end_pos_in_bits = start_pos_in_bits + pixel_length_in_bits - 1
-        start_pos_in_bytes = int(start_pos_in_bits / 8) + 1  # byte 0 is interlacing
-        end_pos_in_bytes = int(end_pos_in_bits / 8) + 1  # byte 0 is interlacing
-
-        section = scanline[start_pos_in_bytes:end_pos_in_bytes + 1]
-        value = int.from_bytes(section, byteorder='big', signed=False)
-
-        unused_bits_right_of_sample = (end_pos_in_bits + 1) % 8
-        mask_sample_bits = (1 << pixel_length_in_bits) - 1
-
-        value &= ~(mask_sample_bits << unused_bits_right_of_sample)
-        value |= (sample & mask_sample_bits) << unused_bits_right_of_sample
-        for pos in range(end_pos_in_bytes, start_pos_in_bytes - 1, -1):
-            scanline[pos] = value & 0xff
-            value >>= 8
-
     def plot(self, x, y, color):
-        if not 0 <= x < self.width:
-            return
-        if not 0 <= y < self.height:
-            return
-        self.set_pixel(x, y, color)
-        # scanline = self.stride * y
-        # pos_byte = int(x / 8)
-        # pos_bit = int(x % 8)
-        # pos = scanline + pos_byte
-        # byte = int(self.buf[pos])
-        # byte &= (~(1 << (7 - pos_bit)))
-        # self.buf[pos] = byte
+        if 0 <= x < self.width and 0 <= y < self.height:
+            self.pixel(x, y, color)
