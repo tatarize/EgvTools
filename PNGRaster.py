@@ -303,8 +303,8 @@ class PngRaster:
 if __name__ == "__main__":
     raster = PngRaster(100, 100, 1, 3)
     raster.fill(0)
-    raster.draw_line(0, 0, 100, 100, 0xFFFFFFFF)
-    raster.draw_line(0, 100, 100, 0, 0)
+    raster.draw_line(0, 0, 100, 100, 1)
+    raster.draw_line(0, 100, 100, 0, 1)
     raster.index_color(0, 0x00FF00)
     raster.index_color(1, 0xFF0000)
     raster.save_png("default.png")
