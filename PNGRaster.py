@@ -308,7 +308,3 @@ if __name__ == "__main__":
     raster.index_color(0, 0x00FF00)
     raster.index_color(1, 0xFF0000)
     raster.save_png("default.png")
-
-    with open("default.png", "rb") as f:
-        for line in PngRaster.png_scanlines(f):
-            print(line)
